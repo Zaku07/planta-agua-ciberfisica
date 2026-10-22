@@ -1,0 +1,184 @@
+# =====================================================================================
+#  PTSC08 Sistemas Ciberfísicos — Planta de Tratamiento de Agua Potable Virtual
+#  Despliegue LOCAL de los 9 contenedores (pruebas de Módulo 1 y 3 antes de pasar a GNS3)
+#
+#  Las redes replican el plan de direccionamiento de GNS3 (mismas IP), por lo que la
+#  lista blanca de la sonda-ids y las reglas del FortiGate son idénticas en ambos entornos.
+#
+#     docker compose up --build -d
+#     docker logs -f plc-central
+#     http://localhost:8080          (panel-hmi-local)
+#
+#  Prueba de intrusión (genera alerta en sonda-ids):
+#     docker compose --profile ataque run --rm atacante-modbus python atacante_modbus.py --plc 192.168.10.20 escribir-coil
+# =====================================================================================
+
+name: planta-agua
+
+x-registro: &registro
+  logging:
+    driver: json-file
+    options: { max-size: "5m", max-file: "3" }
+
+services:
+  # ------------------------- Nivel 0: Proceso físico -------------------------
+  estanque-agua:
+    build: ./contenedores/estanque-agua
+    image: planta/estanque-agua:1.0
+    container_name: estanque-agua
+    hostname: estanque-agua
+    restart: unless-stopped
+    environment:
+      DEMO_FALLAS_CLORO_CADA: "${DEMO_FALLAS_CLORO_CADA:-0}"
+    networks:
+      red_campo: { ipv4_address: 192.168.10.10 }
+    <<: *registro
+
+  # ------------------------- Nivel 1: Dispositivos de campo -------------------------
+  sensor-nivel-estanque:
+    build: ./contenedores/sensor-nivel-estanque
+    image: planta/sensor-nivel-estanque:1.0
+    container_name: sensor-nivel-estanque
+    restart: unless-stopped
+    environment:
+      PLC_HOST: plc-central
+      ESTANQUE_URL: http://estanque-agua:5000
+    depends_on: [estanque-agua, plc-central]
+    networks:
+      red_campo: { ipv4_address: 192.168.10.11 }
+    <<: *registro
+
+  actuador-bomba-agua:
+    build: ./contenedores/actuador-bomba-agua
+    image: planta/actuador-bomba-agua:1.0
+    container_name: actuador-bomba-agua
+    restart: unless-stopped
+    environment:
+      PLC_HOST: plc-central
+      ESTANQUE_URL: http://estanque-agua:5000
+    depends_on: [estanque-agua, plc-central]
+    networks:
+      red_campo: { ipv4_address: 192.168.10.12 }
+    <<: *registro
+
+  # ------------------------- Nivel 2: Control -------------------------
+  plc-central:
+    build: ./contenedores/plc-central
+    image: planta/plc-central:1.0
+    container_name: plc-central
+    hostname: plc-central
+    restart: unless-stopped
+    networks:
+      red_campo: { ipv4_address: 192.168.10.20 }
+      # En GNS3 el tráfico desde Nivel 3 llega ruteado por el FortiGate; aquí se simula
+      # con una segunda interfaz porque Docker no tiene firewall entre redes.
+      red_supervision: { ipv4_address: 192.168.20.20 }
+    <<: *registro
+
+  # ------------------------- Nivel 3: Operaciones / Supervisión -------------------------
+  panel-hmi-local:
+    build: ./contenedores/panel-hmi-local
+    image: planta/panel-hmi-local:1.0
+    container_name: panel-hmi-local
+    restart: unless-stopped
+    environment:
+      PLC_HOST: plc-central
+    ports: ["8080:8080"]
+    depends_on: [plc-central]
+    networks:
+      red_supervision: { ipv4_address: 192.168.20.10 }
+    <<: *registro
+
+  gateway-borde:
+    build: ./contenedores/gateway-borde
+    image: planta/gateway-borde:1.0
+    container_name: gateway-borde
+    restart: unless-stopped
+    environment:
+      PLC_HOST: plc-central
+      BROKER_HOST: broker-mqtt
+      MQTT_USUARIO: gateway-borde
+      MQTT_CLAVE: "${CLAVE_GATEWAY:?Defina CLAVE_GATEWAY en .env}"
+    depends_on: [plc-central, broker-mqtt]
+    networks:
+      red_supervision: { ipv4_address: 192.168.20.11 }
+    <<: *registro
+
+  broker-mqtt:
+    build: ./contenedores/broker-mqtt
+    image: planta/broker-mqtt:1.0
+    container_name: broker-mqtt
+    hostname: broker-mqtt
+    restart: unless-stopped
+    environment:
+      CLAVE_GATEWAY: "${CLAVE_GATEWAY}"
+      CLAVE_PUENTE: "${CLAVE_PUENTE}"
+      CLAVE_SONDA: "${CLAVE_SONDA}"
+      CLAVE_HMI: "${CLAVE_HMI}"
+    volumes:
+      - datos_mqtt:/mosquitto/data
+    networks:
+      red_supervision: { ipv4_address: 192.168.20.12 }
+      red_dmz: { ipv4_address: 192.168.30.12 }
+    <<: *registro
+
+  sonda-ids:
+    build: ./contenedores/sonda-ids
+    image: planta/sonda-ids:1.0
+    container_name: sonda-ids
+    restart: unless-stopped
+    # Equivalente local del puerto SPAN: comparte la pila de red del PLC y ve todo su tráfico.
+    network_mode: "service:plc-central"
+    cap_add: [NET_RAW, NET_ADMIN]
+    environment:
+      IP_SENSOR: 192.168.10.11
+      IP_ACTUADOR: 192.168.10.12
+      IP_HMI: 192.168.20.10
+      IP_GATEWAY: 192.168.20.11
+      MQTT_HOST: broker-mqtt
+      MQTT_USUARIO: sonda-ids
+      MQTT_CLAVE: "${CLAVE_SONDA}"
+    volumes:
+      - ./registros:/registros
+    depends_on: [plc-central]
+    <<: *registro
+
+  # ------------------------- Nivel 3.5: DMZ industrial -------------------------
+  puente-aws:
+    build: ./contenedores/puente-aws
+    image: planta/puente-aws:1.0
+    container_name: puente-aws
+    restart: unless-stopped
+    environment:
+      BROKER_HOST: broker-mqtt
+      MQTT_USUARIO: puente-aws
+      MQTT_CLAVE: "${CLAVE_PUENTE}"
+      AWS_HOST: "${AWS_HOST}"
+      INFLUX_ORG: "${INFLUX_ORG:-planta-agua}"
+      INFLUX_BUCKET: "${INFLUX_BUCKET:-telemetria_ot}"
+      INFLUX_TOKEN: "${INFLUX_TOKEN_PUENTE}"
+      AWS_HUELLA_CERT: "${AWS_HUELLA_CERT}"
+    depends_on: [broker-mqtt]
+    networks:
+      red_dmz: { ipv4_address: 192.168.30.10 }
+    <<: *registro
+
+  # ------------------------- Herramienta de prueba (no es parte de los 9) -------------------------
+  atacante-modbus:
+    build: ./herramientas/atacante-modbus
+    image: planta/atacante-modbus:1.0
+    profiles: ["ataque"]
+    networks:
+      red_campo: { ipv4_address: 192.168.10.66 }
+
+networks:
+  red_campo:          # VLAN 10 — Niveles 0, 1 y 2 (sin salida a Internet)
+    internal: true
+    ipam: { config: [{ subnet: 192.168.10.0/24 }] }
+  red_supervision:    # VLAN 20 — Nivel 3
+    ipam: { config: [{ subnet: 192.168.20.0/24 }] }
+  red_dmz:            # VLAN 30 — Nivel 3.5 (única con salida hacia AWS)
+    ipam: { config: [{ subnet: 192.168.30.0/24 }] }
+
+volumes:
+  datos_mqtt:

@@ -1,0 +1,8 @@
+.env
+nube-aws/.env
+nube-aws/certificados/*.key
+nube-aws/certificados/*.crt
+registros/*
+!registros/.gitkeep
+__pycache__/
+*.pyc
