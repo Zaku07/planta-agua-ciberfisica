@@ -1,0 +1,108 @@
+! =====================================================================
+!  SW-CAMPO  (Cisco IOSvL2)  — Switch de acceso de la Zona de Control
+!  Purdue Niveles 0, 1 y 2  |  VLAN 10 CAMPO_CONTROL_OT  192.168.10.0/24
+!
+!  Puertos reales del IOSvL2: Gi0/0-0/3, Gi1/0-1/3, Gi2/0-2/3, Gi3/0-3/3 (16, en grupos de 4).
+!  En GNS3 la plantilla debe usar "Port name format: Gi{1}/{0}" y "Segment size: 4" para que
+!  los rótulos de los cables coincidan con estos nombres:
+!    Gi0/0  -> Trunk hacia SW-OPERACIONES Gi0/0 (solo VLAN 10)
+!    Gi0/1  -> plc-central             192.168.10.20  (origen SPAN)
+!    Gi0/2  -> estanque-agua           192.168.10.10
+!    Gi0/3  -> sensor-nivel-estanque   192.168.10.11
+!    Gi1/0  -> actuador-bomba-agua     192.168.10.12
+!    Gi1/1  -> atacante-modbus         192.168.10.66  (solo pruebas, apagar después)
+!    Gi3/3  -> sonda-ids eth0          (destino SPAN, sin IP)
+!    Resto  -> apagados (VLAN 999 de cuarentena)
+! =====================================================================
+enable
+configure terminal
+hostname SW-CAMPO
+no ip domain-lookup
+service password-encryption
+banner motd ^ACCESO RESTRINGIDO - Red OT Planta de Agua Potable. Actividad monitoreada.^
+
+vlan 10
+ name CAMPO_CONTROL_OT
+vlan 999
+ name CUARENTENA_NO_USAR
+exit
+
+! Uplink hacia el switch de operaciones (Nivel 3)
+interface GigabitEthernet0/0
+ description TRUNK_A_SW-OPERACIONES
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 10
+ switchport nonegotiate
+ no shutdown
+
+! Puertos de acceso Nivel 0-2 (un dispositivo por puerto)
+interface GigabitEthernet0/1
+ description N2_plc-central
+ switchport mode access
+ switchport access vlan 10
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet0/2
+ description N0_estanque-agua
+ switchport mode access
+ switchport access vlan 10
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet0/3
+ description N1_sensor-nivel-estanque
+ switchport mode access
+ switchport access vlan 10
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet1/0
+ description N1_actuador-bomba-agua
+ switchport mode access
+ switchport access vlan 10
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet1/1
+ description PRUEBAS_atacante-modbus
+ switchport mode access
+ switchport access vlan 10
+ switchport nonegotiate
+ spanning-tree portfast edge
+ no shutdown
+
+! Puerto destino SPAN hacia la sonda IDS
+interface GigabitEthernet3/3
+ description SPAN_DESTINO_sonda-ids
+ switchport mode access
+ switchport nonegotiate
+ spanning-tree portfast edge
+ no shutdown
+
+! Puertos no usados: apagados y en VLAN de cuarentena
+interface range GigabitEthernet1/2 - 3 , GigabitEthernet2/0 - 3 , GigabitEthernet3/0 - 2
+ description NO_USADO
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+exit
+
+! SPAN: copia TODO el tráfico (rx+tx) del puerto del PLC hacia la sonda
+monitor session 1 source interface GigabitEthernet0/1 both
+monitor session 1 destination interface GigabitEthernet3/3
+
+end
+write memory
+
+! Verificación 
+! show vlan brief
+! show interfaces trunk
+! show monitor session 1
+! show interfaces status

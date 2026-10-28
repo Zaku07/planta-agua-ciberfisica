@@ -1,0 +1,106 @@
+! =====================================================================
+!  SW-OPERACIONES  (Cisco IOSvL2)  — Switch de distribución OT
+!  Purdue Nivel 3 (VLAN 20) y Nivel 3.5 DMZ (VLAN 30); transporta VLAN 10 hacia el FortiGate
+!
+!    Gi0/0  -> Trunk hacia SW-CAMPO Gi0/0              (VLAN 10)
+!    Gi0/1  -> Trunk hacia FortiGate port1             (VLAN 10, 20, 30)
+!    Gi1/0  -> panel-hmi-local      192.168.20.10      (VLAN 20)
+!    Gi1/1  -> gateway-borde        192.168.20.11      (VLAN 20)
+!    Gi1/2  -> broker-mqtt          192.168.20.12      (VLAN 20)
+!    Gi1/3  -> sonda-ids eth1       192.168.20.13      (VLAN 20, gestión: envía alertas por MQTT)
+!    Gi2/0  -> puente-aws           192.168.30.10      (VLAN 30 DMZ)
+!
+!  IMPORTANTE: este switch es SOLO capa 2 (sin SVI ni "ip routing"). Todo tráfico entre
+!  VLANs pasa obligatoriamente por el FortiGate, que es quien inspecciona y filtra.
+! =====================================================================
+enable
+configure terminal
+hostname SW-OPERACIONES
+no ip domain-lookup
+no ip routing
+service password-encryption
+banner motd ^ACCESO RESTRINGIDO - Red OT Planta de Agua Potable. Actividad monitoreada.^
+
+vlan 10
+ name CAMPO_CONTROL_OT
+vlan 20
+ name SUPERVISION_OT
+vlan 30
+ name DMZ_INDUSTRIAL
+vlan 999
+ name CUARENTENA_NO_USAR
+exit
+
+interface GigabitEthernet0/0
+ description TRUNK_A_SW-CAMPO
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 10
+ switchport nonegotiate
+ no shutdown
+
+interface GigabitEthernet0/1
+ description TRUNK_A_FORTIGATE_port1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ switchport trunk native vlan 999
+ switchport trunk allowed vlan 10,20,30
+ switchport nonegotiate
+ no shutdown
+
+interface GigabitEthernet1/0
+ description N3_panel-hmi-local
+ switchport mode access
+ switchport access vlan 20
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet1/1
+ description N3_gateway-borde
+ switchport mode access
+ switchport access vlan 20
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet1/2
+ description N3_broker-mqtt
+ switchport mode access
+ switchport access vlan 20
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet1/3
+ description N3_sonda-ids_gestion
+ switchport mode access
+ switchport access vlan 20
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+interface GigabitEthernet2/0
+ description N3.5_DMZ_puente-aws
+ switchport mode access
+ switchport access vlan 30
+ switchport nonegotiate
+ spanning-tree portfast edge
+ spanning-tree bpduguard enable
+ no shutdown
+
+interface range GigabitEthernet0/2 - 3 , GigabitEthernet2/1 - 3 , GigabitEthernet3/0 - 3
+ description NO_USADO
+ switchport mode access
+ switchport access vlan 999
+ shutdown
+exit
+
+end
+write memory
+
+! ---- Verificación ----
+! show vlan brief
+! show interfaces trunk
+! show mac address-table dynamic
